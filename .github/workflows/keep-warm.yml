@@ -1,0 +1,44 @@
+name: Keep the RAS Associates API warm
+
+# Render's free plan spins a service down after ~15 minutes idle, and the next
+# request then waits ~50 seconds for a cold start. For a lead-capture form that
+# looks like a broken site, so this pings the health endpoint often enough to
+# keep an instance up.
+#
+# BUSINESS HOURS ONLY, on purpose. Render's free plan allows 750 instance-hours
+# per month and hours are consumed while the service is awake. Keeping it warm
+# 24/7 would be ~744 hours in a 31-day month -- it fits, but it would swallow
+# the entire free allowance and leave no room for any other free service. This
+# schedule keeps it warm ~14 hours a day (~434 hours/month), which covers when
+# leads actually arrive. Outside those hours a visitor may hit a cold start,
+# and the website form's WhatsApp fallback covers that visibly.
+#
+# 02:00-15:59 UTC = 07:30-21:29 IST.
+on:
+  schedule:
+    - cron: '*/10 2-15 * * *'
+  workflow_dispatch: # lets you trigger a ping by hand from the Actions tab
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping /api/health
+        run: |
+          # --max-time 90 because a cold start legitimately takes ~50s; a
+          # shorter timeout would report failure for a service that is fine.
+          # Retries cover a wake-up that overruns a single attempt.
+          code=$(curl -sS -o /tmp/body.txt -w '%{http_code}' \
+                   --max-time 90 --retry 2 --retry-delay 20 --retry-all-errors \
+                   https://ras-associates.onrender.com/api/health) || true
+          echo "HTTP $code"
+          cat /tmp/body.txt || true
+          echo
+          if [ "$code" != "200" ]; then
+            echo "::warning::health check returned $code"
+          fi
+          # Deliberately does NOT fail the job on a bad status. A red X every
+          # time Render has a blip would train everyone to ignore this, and it
+          # is a keep-warm job, not a monitor. Use a real uptime service if you
+          # want alerting.
